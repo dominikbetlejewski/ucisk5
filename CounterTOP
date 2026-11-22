@@ -1,0 +1,89 @@
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+library UNISIM;
+use UNISIM.VCOMPONENTS.ALL;
+
+-- PB0 = w gore, PB1 = w dol, PB3 = reset.
+entity Counter_Top is
+  generic ( TICK_DIV : positive := 50_000_000 );   -- 100 MHz / 50M = 2 Hz
+  port (
+    CLK_100MHz_P : in    std_logic;
+    CLK_100MHz_N : in    std_logic;
+    PL_USER_PB   : in    std_logic_vector(3 downto 0);
+    PL_USER_LED  : out   std_logic_vector(7 downto 0);
+    PS2A_Clk     : in    std_logic;
+    PS2A_Data    : in    std_logic;
+    OLED_SDA     : inout std_logic;
+    OLED_SCL     : inout std_logic );
+end Counter_Top;
+
+architecture RTL of Counter_Top is
+  type state_t is (WAIT_KEY, UP, DOWN);
+  signal state    : state_t := WAIT_KEY;
+  signal Clk      : std_logic;
+  signal Key_Code : std_logic_vector(7 downto 0);
+  signal E0, F0, Key_Rdy, Load : std_logic;
+  signal Cnt      : unsigned(7 downto 0) := (others => '0');
+  signal tcnt     : integer range 0 to TICK_DIV-1 := 0;
+  signal tick     : std_logic := '0';
+  signal pb1, pb2 : std_logic_vector(3 downto 0) := (others => '0');
+  signal Line     : std_logic_vector(31 downto 0);
+  signal val      : integer range 0 to 255;
+begin
+  
+  CLKBUF : IBUFDS port map (I => CLK_100MHz_P, IB => CLK_100MHz_N, O => Clk);
+
+  KBD : entity work.PS2_Kbd
+    port map (Clk_100MHz => Clk, Key_Code => Key_Code, E0 => E0, F0 => F0,
+              Key_Rdy => Key_Rdy, PS2_Clk => PS2A_Clk, PS2_Data => PS2A_Data);
+
+  OLED : entity work.OLED_1x32
+    port map (Clk_100MHz => Clk, Line => Line, DecPts => "00000000",
+              Blank => "11111000", I2C_NACK => open,
+              OLED_SDA => OLED_SDA, OLED_SCL => OLED_SCL);
+
+  Load <= Key_Rdy and not F0 and not E0;
+   --  Load <= "0000" & Key_Code(3 downto 0);
+  
+  process (Clk)
+  begin
+    if rising_edge(Clk) then
+      pb1 <= PL_USER_PB;                
+      pb2 <= pb1;
+      
+      if tcnt = TICK_DIV-1 then         
+        tcnt <= 0;  tick <= '1';
+      else
+        tcnt <= tcnt + 1;  tick <= '0';
+      end if;
+
+      if pb2(3) = '1' then              
+        state <= WAIT_KEY;  Cnt <= (others => '0');
+      else
+        if state /= WAIT_KEY then       
+          if    pb2(0) = '1' then state <= UP;
+          elsif pb2(1) = '1' then state <= DOWN;
+          end if;
+        end if;
+
+        if Load = '1' then              
+          Cnt <= unsigned(Key_Code);
+          if state = WAIT_KEY then state <= UP; end if;
+        elsif tick = '1' then
+          if    state = UP   then Cnt <= Cnt + 1;
+          elsif state = DOWN then Cnt <= Cnt - 1;
+          end if;
+        end if;
+      end if;
+    end if;
+  end process;
+
+  
+  val  <= to_integer(Cnt);
+  Line <= x"00000" & std_logic_vector(to_unsigned(val / 100, 4))
+                   & std_logic_vector(to_unsigned((val / 10) mod 10, 4))
+                   & std_logic_vector(to_unsigned(val mod 10, 4));
+
+  PL_USER_LED <= std_logic_vector(Cnt);
+end RTL;
